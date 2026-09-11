@@ -28,6 +28,18 @@ type Params struct {
 
 	// Core temperature
 	CoreBandMarginC float64
+
+	// Defrost annotation. The platform only reads defrost state; these
+	// parameters shape how the read-only evidence is annotated, never judged.
+	// DefrostRecovery extends the rise window past the reported defrost end
+	// to cover the thermal pull-down after heating stops.
+	DefrostRecovery time.Duration
+	// DefrostStateLate flags a state report whose ingest time lags device
+	// time by more than this (late telemetry must not be mistaken for live).
+	DefrostStateLate time.Duration
+	// CoreDefrostMargin classifies a core measurement near a rise-window edge
+	// as crossing the boundary rather than confidently inside/outside.
+	CoreDefrostMargin time.Duration
 }
 
 func DefaultParams() Params {
@@ -45,5 +57,8 @@ func DefaultParams() Params {
 		DefaultExposureLimit: 30 * time.Minute,
 		ProbeToleranceMM:     5,
 		CoreBandMarginC:      0.5,
+		DefrostRecovery:      15 * time.Minute,
+		DefrostStateLate:     10 * time.Minute,
+		CoreDefrostMargin:    2 * time.Minute,
 	}
 }

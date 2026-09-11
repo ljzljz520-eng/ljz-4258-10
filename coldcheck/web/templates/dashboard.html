@@ -5,6 +5,7 @@
     <p>库位版本：{{with .Bundle.Snap.Layout}}{{.ID}}（{{.Note}}）{{end}}</p>
     <p>评估时刻：{{fmtTime .Now}}，窗口 {{.Window.String}}</p>
     <p>去抖开门事件：{{len .Bundle.Res.DoorEvents}} · 暴露区间：{{len .Bundle.Res.Exposure}} · 本地差异：{{len .Bundle.Res.Deviations}}</p>
+    <p>除霜温升窗口（只读标注）：{{len .Bundle.Res.DefrostWindows}} · 除霜窗口内/跨边界芯温：{{len .Bundle.Res.CoreDefrost}}</p>
   </div>
   <div class="card">
     <h2>快捷操作（手持）</h2>
@@ -22,13 +23,14 @@
 <section class="card">
   <h2>暴露区间（按批）</h2>
   <table>
-    <thead><tr><th>批</th><th>格位/温区</th><th>原因</th><th>起</th><th>止</th><th>空气°C</th></tr></thead>
+    <thead><tr><th>批</th><th>格位/温区</th><th>原因</th><th>起</th><th>止</th><th>空气°C</th><th>除霜标注</th></tr></thead>
     <tbody>
     {{range .Bundle.Res.Exposure}}
       <tr>
         <td>{{.BatchID}}</td><td>{{.CellCode}} / {{.ZoneCode}}</td><td>{{.Reason}}</td>
         <td>{{fmtTime .From}}</td><td>{{fmtTime .To}}</td>
         <td>{{if .AirC}}{{printf "%.2f" .AirC}}{{else}}—{{end}}</td>
+        <td>{{if .DefrostEvap}}{{range .DefrostEvap}}<span class="tag">{{.}}</span> {{end}}{{else}}常规时段{{end}}</td>
       </tr>
     {{end}}
     </tbody>

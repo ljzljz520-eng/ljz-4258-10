@@ -55,6 +55,30 @@
       <button class="btn danger" type="submit">冻结抽测</button>
     </form>
   </details>
+
+  <details>
+    <summary>⑤ 除霜状态（只读接收，不控制设备）</summary>
+    <p class="hint">由制冷系统上报；平台只划温升窗口并把窗口内芯温单列，不自动判定品质变化。</p>
+    <form hx-post="/defrost" hx-target="#result" hx-swap="innerHTML">
+      <label>蒸发器编号 <input name="evap_id" required placeholder="EV-1"></label>
+      <label>状态
+        <select name="state"><option value="start">开始除霜</option><option value="end">结束除霜</option></select>
+      </label>
+      <label>设备时间（留空=现在；补录历史即迟到状态） <input name="at" type="datetime-local"></label>
+      <button class="btn" type="submit">接收除霜状态</button>
+    </form>
+  </details>
+
+  <details>
+    <summary>⑥ 空气节点维护/校准（挂起读数与离线判断）</summary>
+    <form hx-post="/maintenance" hx-target="#result" hx-swap="innerHTML">
+      <label>节点编号 <input name="node_id" required placeholder="n-b12"></label>
+      <label>开始时间（留空=现在） <input name="from" type="datetime-local"></label>
+      <label>结束时间（留空=维护进行中） <input name="to" type="datetime-local"></label>
+      <label>原因 <input name="reason" placeholder="校准/换电池"></label>
+      <button class="btn" type="submit">登记维护</button>
+    </form>
+  </details>
 </section>
 
 <section id="result" class="card" aria-live="polite"></section>

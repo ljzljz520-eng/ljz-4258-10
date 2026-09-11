@@ -16,12 +16,15 @@ type Store interface {
 	UpsertZone(ctx context.Context, z domain.Zone) error
 	UpsertCell(ctx context.Context, c domain.Cell) error
 	UpsertDoor(ctx context.Context, d domain.Door) error
+	UpsertEvaporator(ctx context.Context, e domain.Evaporator) error
 	UpsertNode(ctx context.Context, n domain.Node) error
 	UpsertBatch(ctx context.Context, b domain.Batch) error
 	SaveLayoutVersion(ctx context.Context, v domain.LayoutVersion) error
 
 	AddRawDoorEvent(ctx context.Context, e domain.RawDoorEvent) error
 	AddAirReading(ctx context.Context, r domain.AirReading) error
+	AddDefrostEvent(ctx context.Context, e domain.DefrostEvent) error
+	AddNodeMaintenance(ctx context.Context, m domain.NodeMaintenance) error
 	AddOccupancy(ctx context.Context, o domain.Occupancy) error
 	AddPresenceEvent(ctx context.Context, e domain.PresenceEvent) error
 	AddMoveScan(ctx context.Context, m domain.MoveScan) error

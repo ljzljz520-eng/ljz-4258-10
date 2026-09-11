@@ -46,6 +46,41 @@ CREATE TABLE IF NOT EXISTS doors (
     name      text NOT NULL
 );
 
+-- Evaporators are cooling coils. The platform only READS their defrost
+-- state; no defrost cycle can be started or stopped from here.
+CREATE TABLE IF NOT EXISTS evaporators (
+    id        text PRIMARY KEY,
+    zone_code text NOT NULL REFERENCES zones(code),
+    name      text NOT NULL DEFAULT '',
+    -- Explicitly served cells; empty array means the whole zone, so one
+    -- zone can host several independently defrosting evaporators.
+    cells     text[] NOT NULL DEFAULT '{}'
+);
+
+-- Read-only defrost-state transitions. device_at is the coil clock (truth
+-- time), ingested_at when the platform learned of the state; a large gap is
+-- late telemetry. Windows are always reconstructed from device_at.
+CREATE TABLE IF NOT EXISTS defrost_events (
+    id          bigserial PRIMARY KEY,
+    evap_id     text NOT NULL REFERENCES evaporators(id),
+    device_at   timestamptz NOT NULL,
+    starting    boolean NOT NULL,
+    ingested_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS defrost_events_time_idx ON defrost_events (device_at);
+
+-- Air nodes out of service (calibration / battery swap / replacement).
+-- Readings inside [from_at,to_at) are untrustworthy; an open to_at means
+-- maintenance is still ongoing and the node must not look offline.
+CREATE TABLE IF NOT EXISTS node_maintenance (
+    id        bigserial PRIMARY KEY,
+    dev_eui   text NOT NULL REFERENCES nodes(dev_eui),
+    from_at   timestamptz NOT NULL,
+    to_at     timestamptz,
+    reason    text NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS node_maintenance_time_idx ON node_maintenance (from_at, to_at);
+
 CREATE TABLE IF NOT EXISTS nodes (
     dev_eui       text PRIMARY KEY,
     cell_code     text NOT NULL REFERENCES cells(code),

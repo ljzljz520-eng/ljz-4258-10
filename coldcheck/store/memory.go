@@ -15,9 +15,12 @@ type Memory struct {
 	zones       map[string]*domain.Zone
 	cells       map[string]*domain.Cell
 	doors       map[string]*domain.Door
+	evaporators map[string]*domain.Evaporator
 	nodes       map[string]*domain.Node
 	batches     map[string]*domain.Batch
 	rawDoors    []domain.RawDoorEvent
+	defrosts    []domain.DefrostEvent
+	maintenance []domain.NodeMaintenance
 	air         []domain.AirReading
 	occupancies []domain.Occupancy
 	presence    []domain.PresenceEvent
@@ -28,12 +31,13 @@ type Memory struct {
 
 func NewMemory() *Memory {
 	return &Memory{
-		zones:   map[string]*domain.Zone{},
-		cells:   map[string]*domain.Cell{},
-		doors:   map[string]*domain.Door{},
-		nodes:   map[string]*domain.Node{},
-		batches: map[string]*domain.Batch{},
-		layout:  &domain.LayoutVersion{ID: "mem-layout", Active: true, CreatedAt: time.Now()},
+		zones:       map[string]*domain.Zone{},
+		cells:       map[string]*domain.Cell{},
+		doors:       map[string]*domain.Door{},
+		evaporators: map[string]*domain.Evaporator{},
+		nodes:       map[string]*domain.Node{},
+		batches:     map[string]*domain.Batch{},
+		layout:      &domain.LayoutVersion{ID: "mem-layout", Active: true, CreatedAt: time.Now()},
 	}
 }
 
@@ -46,9 +50,12 @@ func (m *Memory) Load(_ context.Context, now time.Time, window time.Duration) (*
 	from := now.Add(-window)
 	snap := &domain.Snapshot{
 		At: now, Window: window, Layout: clonePtr(m.layout),
-		Zones: map[string]*domain.Zone{}, Cells: map[string]*domain.Cell{},
-		Doors: map[string]*domain.Door{}, Nodes: map[string]*domain.Node{},
-		Batches: map[string]*domain.Batch{},
+		Zones:       map[string]*domain.Zone{},
+		Cells:       map[string]*domain.Cell{},
+		Doors:       map[string]*domain.Door{},
+		Evaporators: map[string]*domain.Evaporator{},
+		Nodes:       map[string]*domain.Node{},
+		Batches:     map[string]*domain.Batch{},
 	}
 	for k, v := range m.zones {
 		if v.LayoutID != "" && m.layout != nil && v.LayoutID != m.layout.ID {
@@ -65,6 +72,11 @@ func (m *Memory) Load(_ context.Context, now time.Time, window time.Duration) (*
 	for k, v := range m.doors {
 		snap.Doors[k] = clonePtr(v)
 	}
+	for k, v := range m.evaporators {
+		cp := *v
+		cp.Cells = append([]string(nil), v.Cells...)
+		snap.Evaporators[k] = &cp
+	}
 	for k, v := range m.nodes {
 		snap.Nodes[k] = clonePtr(v)
 	}
@@ -74,6 +86,17 @@ func (m *Memory) Load(_ context.Context, now time.Time, window time.Duration) (*
 	for _, e := range m.rawDoors {
 		if !e.At.Before(from) {
 			snap.RawDoorEvents = append(snap.RawDoorEvents, e)
+		}
+	}
+	for _, e := range m.defrosts {
+		if !e.At.Before(from) {
+			snap.Defrosts = append(snap.Defrosts, e)
+		}
+	}
+	for _, mn := range m.maintenance {
+		// include intervals overlapping the window, plus open-ended ones
+		if mn.To.IsZero() || mn.To.After(from) {
+			snap.Maintenance = append(snap.Maintenance, mn)
 		}
 	}
 	for _, r := range m.air {
@@ -150,6 +173,14 @@ func (m *Memory) UpsertDoor(_ context.Context, d domain.Door) error {
 	m.doors[d.ID] = &d
 	return nil
 }
+func (m *Memory) UpsertEvaporator(_ context.Context, e domain.Evaporator) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := e
+	cp.Cells = append([]string(nil), e.Cells...)
+	m.evaporators[e.ID] = &cp
+	return nil
+}
 func (m *Memory) UpsertNode(_ context.Context, n domain.Node) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -172,6 +203,18 @@ func (m *Memory) AddAirReading(_ context.Context, r domain.AirReading) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.air = append(m.air, r)
+	return nil
+}
+func (m *Memory) AddDefrostEvent(_ context.Context, e domain.DefrostEvent) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.defrosts = append(m.defrosts, e)
+	return nil
+}
+func (m *Memory) AddNodeMaintenance(_ context.Context, mn domain.NodeMaintenance) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maintenance = append(m.maintenance, mn)
 	return nil
 }
 func (m *Memory) AddOccupancy(_ context.Context, o domain.Occupancy) error {

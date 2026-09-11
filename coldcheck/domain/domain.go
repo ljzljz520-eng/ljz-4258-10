@@ -45,6 +45,29 @@ type Door struct {
 	Name     string
 }
 
+// Evaporator is a defrost-capable cooling coil. The platform only READS
+// defrost state reported by the refrigeration system; it never starts,
+// stops or schedules a defrost and sends no downlinks.
+type Evaporator struct {
+	ID       string
+	ZoneCode string
+	Name     string
+	// Cells explicitly served by this evaporator. Empty means every cell in
+	// ZoneCode, so one zone can host several independently defrosting coils.
+	Cells []string
+}
+
+// DefrostEvent is a read-only defrost-state transition. At is the device
+// timestamp (truth time); IngestedAt is when the platform learned of it. A
+// state report that arrives long after its device time is late data: pairing
+// still uses device time, but the derived window is flagged late.
+type DefrostEvent struct {
+	EvapID     string
+	At         time.Time
+	Starting   bool // true = defrost starts, false = defrost ends
+	IngestedAt time.Time
+}
+
 // RawDoorEvent is what the magnetic contact reports, including bounces.
 type RawDoorEvent struct {
 	DoorID string
@@ -76,6 +99,18 @@ type AirReading struct {
 	At     time.Time
 	C      float64
 	RSSI   int
+}
+
+// NodeMaintenance marks an air node as out of service during [From,To)
+// (calibration, battery swap, replacement). Readings inside the interval are
+// operator-acknowledged untrustworthy and never enter the air series; the
+// node is neither offline nor occluded while the interval covers the
+// evaluation instant.
+type NodeMaintenance struct {
+	NodeID string
+	From   time.Time
+	To     time.Time // zero means still in maintenance at evaluation time
+	Reason string
 }
 
 type Batch struct {
@@ -156,6 +191,7 @@ type Alert struct {
 	NodeID   string    `json:"nodeId,omitempty"`
 	DoorID   string    `json:"doorId,omitempty"`
 	PlanID   string    `json:"planId,omitempty"`
+	EvapID   string    `json:"evapId,omitempty"`
 	At       time.Time `json:"at"`
 }
 
@@ -167,9 +203,12 @@ type Snapshot struct {
 	Zones         map[string]*Zone
 	Cells         map[string]*Cell
 	Doors         map[string]*Door
+	Evaporators   map[string]*Evaporator
 	Nodes         map[string]*Node
 	RawDoorEvents []RawDoorEvent
 	DoorEvents    []DoorEvent // when pre-debounced
+	Defrosts      []DefrostEvent
+	Maintenance   []NodeMaintenance
 	Air           []AirReading
 	Batches       map[string]*Batch
 	Occupancies   []Occupancy
@@ -178,6 +217,37 @@ type Snapshot struct {
 	Plans         []FreezePlan
 	Events        []PresenceEvent
 	Window        time.Duration // evaluation look-back window
+}
+
+// InMaintenance reports whether instant t falls inside one of the node's
+// maintenance intervals. An interval with zero To is still open.
+func (s *Snapshot) InMaintenance(nodeID string, t time.Time) bool {
+	for _, m := range s.Maintenance {
+		if m.NodeID != nodeID {
+			continue
+		}
+		if !t.Before(m.From) && (m.To.IsZero() || t.Before(m.To)) {
+			return true
+		}
+	}
+	return false
+}
+
+// NodeUnderMaintenance reports whether the node is covered by an open-ended
+// maintenance interval at the evaluation instant.
+func (s *Snapshot) NodeUnderMaintenance(nodeID string) bool {
+	for _, m := range s.Maintenance {
+		if m.NodeID != nodeID {
+			continue
+		}
+		if !m.To.IsZero() {
+			continue
+		}
+		if !s.At.Before(m.From) {
+			return true
+		}
+	}
+	return false
 }
 
 // ActiveAt reports whether the quality freeze covers instant t.

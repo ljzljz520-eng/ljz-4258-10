@@ -90,6 +90,10 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /door", a.postDoor)
 	mux.HandleFunc("POST /core", a.postCore)
 	mux.HandleFunc("POST /freeze", a.postFreeze)
+	// Defrost state is READ ONLY: the refrigeration system reports state in,
+	// the platform never sends a command out. Maintenance marks a node mute.
+	mux.HandleFunc("POST /defrost", a.postDefrost)
+	mux.HandleFunc("POST /maintenance", a.postMaintenance)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 	return mux
 }
@@ -324,4 +328,86 @@ func (a *App) postFreeze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.render(w, "ok.html", 200, map[string]any{"Msg": fmt.Sprintf("已冻结质量计划 %s：%d 个随机格位 × %d 个随机时点", plan.ID, len(plan.Cells), len(plan.Points))})
+}
+
+// postDefrost ingests a READ-ONLY defrost-state transition reported by the
+// refrigeration system. It never commands the coil: starting/stopping a
+// defrost from here is intentionally impossible. A state supplied with an
+// earlier "at" than the ingest instant is preserved as late telemetry so the
+// rule engine replays history by device time.
+func (a *App) postDefrost(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	evap := strings.TrimSpace(r.FormValue("evap_id"))
+	if evap == "" {
+		http.Error(w, "evap_id required", 400)
+		return
+	}
+	state := strings.TrimSpace(r.FormValue("state"))
+	var starting bool
+	switch state {
+	case "start", "on", "begin", "1":
+		starting = true
+	case "end", "off", "stop", "0":
+		starting = false
+	default:
+		http.Error(w, "state must be start|end", 400)
+		return
+	}
+	ingested := a.nowTime()
+	e := domain.DefrostEvent{
+		EvapID: evap, Starting: starting,
+		At: parseTime(r.FormValue("at"), ingested), IngestedAt: ingested,
+	}
+	if err := a.Store.AddDefrostEvent(r.Context(), e); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	s := "结束"
+	if starting {
+		s = "开始"
+	}
+	note := ""
+	if d := ingested.Sub(e.At); d > a.Params.DefrostStateLate {
+		note = fmt.Sprintf("；该状态迟到 %s，将按设备时刻回放并标注", d.Round(time.Second))
+	}
+	a.render(w, "ok.html", 200, map[string]any{"Msg": fmt.Sprintf("已只读接收蒸发器 %s 除霜%s状态（设备时刻 %s）%s；平台不控制除霜",
+		evap, s, e.At.Local().Format("01-02 15:04:05"), note)})
+}
+
+// postMaintenance marks an air node as out of service (calibration/swap).
+// "to" empty means maintenance is still open; readings inside the interval
+// are dropped from the air series and offline/occlusion checks are suspended.
+func (a *App) postMaintenance(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	node := strings.TrimSpace(r.FormValue("node_id"))
+	if node == "" {
+		http.Error(w, "node_id required", 400)
+		return
+	}
+	now := a.nowTime()
+	from := parseTime(r.FormValue("from"), now)
+	mn := domain.NodeMaintenance{NodeID: node, From: from, Reason: r.FormValue("reason")}
+	if to := strings.TrimSpace(r.FormValue("to")); to != "" {
+		mn.To = parseTime(to, now)
+		if !mn.To.After(mn.From) {
+			http.Error(w, "to must be after from", 400)
+			return
+		}
+	}
+	if err := a.Store.AddNodeMaintenance(r.Context(), mn); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	span := "进行中"
+	if !mn.To.IsZero() {
+		span = fmt.Sprintf("%s–%s", mn.From.Local().Format("15:04"), mn.To.Local().Format("15:04"))
+	}
+	a.render(w, "ok.html", 200, map[string]any{"Msg": fmt.Sprintf("节点 %s 维护时段（%s）已挂起其读数与离线判断：%s",
+		node, span, mn.Reason)})
 }

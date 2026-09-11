@@ -222,3 +222,94 @@ func TestLoraRejectsImplausibleObjectTemp(t *testing.T) {
 		t.Fatalf("status = %d, want 400 for implausible decoder temp", resp.StatusCode)
 	}
 }
+
+// Read-only defrost ingest: a late end state must be stored by device time,
+// surface DEFROST_STATE_LATE, and never be mistaken for an ongoing defrost.
+func TestDefrostIngestReadOnly(t *testing.T) {
+	at := time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
+	srv := newSrvAt(t, at)
+	defer srv.Close()
+
+	// Late END for EV-1: device time 09:20, only reported now (10:00).
+	form := url.Values{
+		"evap_id": {"EV-1"}, "state": {"end"},
+		"at": {at.Add(-40 * time.Minute).Format(time.RFC3339)},
+	}
+	resp, err := srv.Client().PostForm(srv.URL+"/defrost", form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := make([]byte, 4096)
+	n, _ := resp.Body.Read(body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("defrost ingest status = %d: %s", resp.StatusCode, body[:n])
+	}
+	if !strings.Contains(string(body[:n]), "迟到") {
+		t.Fatalf("late state must be acknowledged as late: %q", body[:n])
+	}
+
+	// Bad state must be rejected rather than controlling anything.
+	bad := url.Values{"evap_id": {"EV-1"}, "state": {"defrost-now-please"}}
+	r2, err := srv.Client().PostForm(srv.URL+"/defrost", bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2.Body.Close()
+	if r2.StatusCode != 400 {
+		t.Fatalf("invalid defrost state: status = %d, want 400", r2.StatusCode)
+	}
+}
+
+// Maintenance registration suspends offline detection for an open interval.
+func TestMaintenanceIngestSuppressesOffline(t *testing.T) {
+	at := time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
+	srv := newSrvAt(t, at)
+	defer srv.Close()
+
+	form := url.Values{
+		"node_id": {"n-dead"}, "reason": {"校准"},
+		"from": {at.Add(-2 * time.Minute).Format(time.RFC3339)},
+	}
+	resp, err := srv.Client().PostForm(srv.URL+"/maintenance", form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("maintenance status = %d", resp.StatusCode)
+	}
+
+	ar, err := srv.Client().Get(srv.URL + "/api/alerts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ar.Body.Close()
+	var payload struct {
+		Alerts []struct {
+			Code   string `json:"code"`
+			NodeID string `json:"nodeId"`
+		} `json:"alerts"`
+	}
+	if err := json.NewDecoder(ar.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	var offline, maintenance bool
+	for _, a := range payload.Alerts {
+		if a.NodeID != "n-dead" {
+			continue
+		}
+		switch a.Code {
+		case "NODE_OFFLINE":
+			offline = true
+		case "NODE_MAINTENANCE":
+			maintenance = true
+		}
+	}
+	if offline {
+		t.Fatal("open maintenance must suppress NODE_OFFLINE for n-dead")
+	}
+	if !maintenance {
+		t.Fatal("expected NODE_MAINTENANCE info for n-dead")
+	}
+}

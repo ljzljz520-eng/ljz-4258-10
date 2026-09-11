@@ -36,9 +36,12 @@ func (pg *Postgres) Load(ctx context.Context, now time.Time, window time.Duratio
 	from := now.Add(-window)
 	snap := &domain.Snapshot{
 		At: now, Window: window,
-		Zones: map[string]*domain.Zone{}, Cells: map[string]*domain.Cell{},
-		Doors: map[string]*domain.Door{}, Nodes: map[string]*domain.Node{},
-		Batches: map[string]*domain.Batch{},
+		Zones:       map[string]*domain.Zone{},
+		Cells:       map[string]*domain.Cell{},
+		Doors:       map[string]*domain.Door{},
+		Evaporators: map[string]*domain.Evaporator{},
+		Nodes:       map[string]*domain.Node{},
+		Batches:     map[string]*domain.Batch{},
 	}
 
 	var lid, lnote string
@@ -108,6 +111,22 @@ func (pg *Postgres) Load(ctx context.Context, now time.Time, window time.Duratio
 	}
 	drows.Close()
 
+	evrows, err := pg.DB.QueryContext(ctx, `SELECT id,zone_code,name,cells FROM evaporators`)
+	if err != nil {
+		return nil, err
+	}
+	for evrows.Next() {
+		var e domain.Evaporator
+		var cells pq.StringArray
+		if err := evrows.Scan(&e.ID, &e.ZoneCode, &e.Name, &cells); err != nil {
+			evrows.Close()
+			return nil, err
+		}
+		e.Cells = []string(cells)
+		snap.Evaporators[e.ID] = &e
+	}
+	evrows.Close()
+
 	nrows, err := pg.DB.QueryContext(ctx,
 		`SELECT dev_eui,cell_code,layer,baseline_rssi,
 		        EXTRACT(EPOCH FROM deadline)::float8,active FROM nodes`)
@@ -157,6 +176,41 @@ func (pg *Postgres) Load(ctx context.Context, now time.Time, window time.Duratio
 		snap.RawDoorEvents = append(snap.RawDoorEvents, e)
 	}
 	erows.Close()
+
+	dvrows, err := pg.DB.QueryContext(ctx,
+		`SELECT evap_id,device_at,starting,ingested_at FROM defrost_events WHERE device_at >= $1 ORDER BY device_at`, from)
+	if err != nil {
+		return nil, err
+	}
+	for dvrows.Next() {
+		var e domain.DefrostEvent
+		if err := dvrows.Scan(&e.EvapID, &e.At, &e.Starting, &e.IngestedAt); err != nil {
+			dvrows.Close()
+			return nil, err
+		}
+		snap.Defrosts = append(snap.Defrosts, e)
+	}
+	dvrows.Close()
+
+	mnrows, err := pg.DB.QueryContext(ctx,
+		`SELECT dev_eui,from_at,to_at,reason FROM node_maintenance
+		 WHERE to_at IS NULL OR to_at >= $1 ORDER BY from_at`, from)
+	if err != nil {
+		return nil, err
+	}
+	for mnrows.Next() {
+		var m domain.NodeMaintenance
+		var to sql.NullTime
+		if err := mnrows.Scan(&m.NodeID, &m.From, &to, &m.Reason); err != nil {
+			mnrows.Close()
+			return nil, err
+		}
+		if to.Valid {
+			m.To = to.Time
+		}
+		snap.Maintenance = append(snap.Maintenance, m)
+	}
+	mnrows.Close()
 
 	arows, err := pg.DB.QueryContext(ctx,
 		`SELECT dev_eui,at,c,rssi FROM node_readings WHERE at >= $1 ORDER BY at`, from)
@@ -353,6 +407,14 @@ func (pg *Postgres) UpsertDoor(ctx context.Context, d domain.Door) error {
 	return err
 }
 
+func (pg *Postgres) UpsertEvaporator(ctx context.Context, e domain.Evaporator) error {
+	_, err := pg.DB.ExecContext(ctx,
+		`INSERT INTO evaporators(id,zone_code,name,cells) VALUES($1,$2,$3,$4)
+		 ON CONFLICT (id) DO UPDATE SET zone_code=EXCLUDED.zone_code,name=EXCLUDED.name,cells=EXCLUDED.cells`,
+		e.ID, e.ZoneCode, e.Name, pq.Array(e.Cells))
+	return err
+}
+
 func (pg *Postgres) UpsertNode(ctx context.Context, n domain.Node) error {
 	_, err := pg.DB.ExecContext(ctx,
 		`INSERT INTO nodes(dev_eui,cell_code,layer,baseline_rssi,deadline,active)
@@ -384,6 +446,31 @@ func (pg *Postgres) AddAirReading(ctx context.Context, r domain.AirReading) erro
 	_, err := pg.DB.ExecContext(ctx,
 		`INSERT INTO node_readings(dev_eui,at,c,rssi) VALUES($1,$2,$3,$4)
 		 ON CONFLICT DO NOTHING`, r.NodeID, r.At, r.C, r.RSSI)
+	return err
+}
+
+// AddDefrostEvent stores a READ-ONLY defrost-state report. The platform never
+// writes a defrost state to equipment; ingested_at preserves how late the
+// report arrived while device_at keeps the pairing truth time.
+func (pg *Postgres) AddDefrostEvent(ctx context.Context, e domain.DefrostEvent) error {
+	ingested := e.IngestedAt
+	if ingested.IsZero() {
+		ingested = time.Now()
+	}
+	_, err := pg.DB.ExecContext(ctx,
+		`INSERT INTO defrost_events(evap_id,device_at,starting,ingested_at) VALUES($1,$2,$3,$4)`,
+		e.EvapID, e.At, e.Starting, ingested)
+	return err
+}
+
+func (pg *Postgres) AddNodeMaintenance(ctx context.Context, m domain.NodeMaintenance) error {
+	var to interface{}
+	if !m.To.IsZero() {
+		to = m.To
+	}
+	_, err := pg.DB.ExecContext(ctx,
+		`INSERT INTO node_maintenance(dev_eui,from_at,to_at,reason) VALUES($1,$2,$3,$4)`,
+		m.NodeID, m.From, to, m.Reason)
 	return err
 }
 

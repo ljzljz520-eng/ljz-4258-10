@@ -18,6 +18,37 @@ type CoreIssue struct {
 	Msg           string
 }
 
+// CoreDefrost is the read-only defrost attribution of one manual core
+// measurement. It separates routine core temperatures from those taken in a
+// defrost air-rise window or across a window edge. Class is one of:
+// "routine", "in", "cross". This classification NEVER suppresses or invents
+// a band verdict and never concludes a quality change — it is evidence
+// context only.
+type CoreDefrost struct {
+	MeasurementID string
+	BatchID       string
+	CellCode      string
+	At            time.Time
+	C             float64
+	Class         string
+	Windows       []DefrostWindow
+}
+
+// AnnotateCoreMeasurements attributes every core measurement to defrost rise
+// windows of the cell it was taken in.
+func AnnotateCoreMeasurements(snap *domain.Snapshot, ws []DefrostWindow, p Params) []CoreDefrost {
+	out := make([]CoreDefrost, 0, len(snap.Core))
+	for _, m := range snap.Core {
+		class, hit := CoreDefrostClass(snap, ws, m.CellCode, m.At, p.CoreDefrostMargin)
+		out = append(out, CoreDefrost{
+			MeasurementID: m.ID, BatchID: m.BatchID, CellCode: m.CellCode,
+			At: m.At, C: m.C, Class: class, Windows: hit,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
+	return out
+}
+
 type MissingFrozen struct {
 	PlanID   string
 	CellCode string

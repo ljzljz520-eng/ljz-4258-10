@@ -90,6 +90,16 @@ func Build(now time.Time) *Scenario {
 	}
 	must0(st.UpsertDoor(ctx, domain.Door{ID: "D1", CellCode: "A-01-02", Name: "冷藏穿堂门"}))
 	must0(st.UpsertDoor(ctx, domain.Door{ID: "D2", CellCode: "U-01-01", Name: "装卸门"}))
+	must0(st.UpsertDoor(ctx, domain.Door{ID: "D3", CellCode: "A-03-03", Name: "冷藏后门"}))
+
+	// Two evaporators in DIFFERENT zones defrost on independent schedules.
+	// EV-1 explicitly serves the A-03-03 coil bay (other CHILL cells keep
+	// routine air); EV-2 serves the whole FREEZE zone. Both are read-only:
+	// the platform ingests state and draws rise windows, never starts one.
+	must0(st.UpsertEvaporator(ctx, domain.Evaporator{
+		ID: "EV-1", ZoneCode: "CHILL", Name: "冷藏蒸发器1", Cells: []string{"A-03-03"},
+	}))
+	must0(st.UpsertEvaporator(ctx, domain.Evaporator{ID: "EV-2", ZoneCode: "FREEZE", Name: "冷冻蒸发器1"}))
 
 	// A-02-01 is covered by adjacent A-01-01. A-02-03 is a deliberate gap.
 	mount := map[string]string{
@@ -113,6 +123,10 @@ func Build(now time.Time) *Scenario {
 	must0(st.UpsertBatch(ctx, domain.Batch{ID: "LOT-3", Product: "冰淇淋", SegCode: "ICE-CREAM", Lot: "20260911-03",
 		MinC: -22, MaxC: -18, MaxExposure: 10 * time.Minute}))
 	must0(st.UpsertBatch(ctx, domain.Batch{ID: "LOT-4", Product: "酸奶", SegCode: "YOGURT", Lot: "20260911-04",
+		MinC: 0, MaxC: 4, MaxExposure: 30 * time.Minute}))
+	// LOT-5 occupies the EV-1 served bay A-03-03 around its defrost cycle so
+	// core measurements in / across the rise window have a product context.
+	must0(st.UpsertBatch(ctx, domain.Batch{ID: "LOT-5", Product: "巴氏鲜奶", SegCode: "FRESH-MILK", Lot: "20260911-05",
 		MinC: 0, MaxC: 4, MaxExposure: 30 * time.Minute}))
 
 	// LOT-1 relocation WITH scan.
@@ -138,11 +152,21 @@ func Build(now time.Time) *Scenario {
 	must0(st.AddOccupancy(ctx, domain.Occupancy{BatchID: "LOT-3", CellCode: "A-03-03",
 		From: now.Add(-30 * time.Minute), To: now.Add(2 * time.Hour)}))
 
+	// LOT-5 occupies A-03-03 (EV-1 served bay) from -115m onward, spanning
+	// the whole defrost rise window; short warm-air exposure stays annotated
+	// and under the batch exposure limit.
+	must0(st.AddOccupancy(ctx, domain.Occupancy{BatchID: "LOT-5", CellCode: "A-03-03",
+		From: now.Add(-115 * time.Minute), To: now.Add(2 * time.Hour)}))
+
 	// LOT-4 near the evaporator: locally cold while zone mean stays in band.
 	must0(st.AddOccupancy(ctx, domain.Occupancy{BatchID: "LOT-4", CellCode: "A-03-02",
 		From: now.Add(-3 * time.Hour), To: now.Add(2 * time.Hour)}))
 
 	bucket := rules.DefaultParams().Bucket
+	// EV-1 active heating: [-110m,-100m); rise window incl. recovery: until -85m.
+	defrostWarm := func(t time.Time) bool {
+		return !t.Before(now.Add(-110*time.Minute)) && t.Before(now.Add(-85*time.Minute))
+	}
 	for t := now.Add(-win + bucket/2); t.Before(now); t = t.Add(bucket) {
 		doorWarm := func(base float64) float64 {
 			if t.After(now.Add(-70*time.Minute)) && t.Before(now.Add(-45*time.Minute)) {
@@ -156,6 +180,11 @@ func Build(now time.Time) *Scenario {
 			"n-a32": -0.8,
 			"n-a33": 2.1, "n-b11": -20.0, "n-b12": -19.6, "n-u11": 3.4,
 		}
+		// EV-1 defrost heats the CHILL cell near its coil; the warm readings
+		// stay inside the read-only rise window and never enter routine stats.
+		if defrostWarm(t) {
+			readings["n-a33"] = 6.8
+		}
 		for id, c := range readings {
 			rssi := -68
 			if id == "n-a13" {
@@ -165,6 +194,30 @@ func Build(now time.Time) *Scenario {
 		}
 	}
 	must0(st.AddAirReading(ctx, domain.AirReading{NodeID: "n-dead", At: now.Add(-2 * time.Hour), C: 2.2, RSSI: -70}))
+
+	// EV-1 defrost state pair. The END report is late telemetry (device time
+	// -100m, ingested only at -3m), so pairing must still draw the historical
+	// window from device time and flag DEFROST_STATE_LATE.
+	must0(st.AddDefrostEvent(ctx, domain.DefrostEvent{EvapID: "EV-1",
+		At: now.Add(-110 * time.Minute), Starting: true, IngestedAt: now.Add(-109 * time.Minute)}))
+	must0(st.AddDefrostEvent(ctx, domain.DefrostEvent{EvapID: "EV-1",
+		At: now.Add(-100 * time.Minute), Starting: false, IngestedAt: now.Add(-3 * time.Minute)}))
+	// EV-2 defrosts independently in FREEZE; reports arrive on time, and the
+	// zone air stays in band (defrost state is annotated, not inferred).
+	must0(st.AddDefrostEvent(ctx, domain.DefrostEvent{EvapID: "EV-2",
+		At: now.Add(-50 * time.Minute), Starting: true, IngestedAt: now.Add(-50 * time.Minute)}))
+	must0(st.AddDefrostEvent(ctx, domain.DefrostEvent{EvapID: "EV-2",
+		At: now.Add(-40 * time.Minute), Starting: false, IngestedAt: now.Add(-40 * time.Minute)}))
+
+	// Door D3 opens while EV-1 is heating: two warming causes coincide.
+	must0(st.AddRawDoorEvent(ctx, domain.RawDoorEvent{DoorID: "D3", At: now.Add(-106 * time.Minute), IsOpen: true, RSSI: -61}))
+	must0(st.AddRawDoorEvent(ctx, domain.RawDoorEvent{DoorID: "D3", At: now.Add(-103 * time.Minute), IsOpen: false, RSSI: -62}))
+
+	// n-b12 enters maintenance exactly when EV-2 defrost starts. The interval
+	// is open, so its readings are dropped from the series and the node is not
+	// offline despite going silent.
+	must0(st.AddNodeMaintenance(ctx, domain.NodeMaintenance{NodeID: "n-b12",
+		From: now.Add(-50 * time.Minute), Reason: "校准/换电池"}))
 
 	// D1: contact bounce (open/closed/open within 2s) then one real 20m open.
 	o := now.Add(-60 * time.Minute)
@@ -193,6 +246,16 @@ func Build(now time.Time) *Scenario {
 	must0(st.AddCoreMeasurement(ctx, domain.CoreMeasurement{
 		ID: "CM-3", BatchID: "LOT-3", CellCode: "B-01-01", At: now.Add(-10 * time.Minute), C: -15.0,
 		ProbeDepthMM: 100, RequiredDepthMM: 100, ReachedCenter: true, Operator: "wh-wang"}))
+	// CM-4: in-band core measured while EV-1 is heating -> separated into the
+	// defrost-window set but raises no band or quality verdict.
+	must0(st.AddCoreMeasurement(ctx, domain.CoreMeasurement{
+		ID: "CM-4", BatchID: "LOT-5", CellCode: "A-03-03", At: now.Add(-105 * time.Minute), C: 2.4,
+		ProbeDepthMM: 120, RequiredDepthMM: 120, ReachedCenter: true, Operator: "qa-li"}))
+	// CM-5: within CoreDefrostMargin of the rise-window end (-85m) -> crossing
+	// the window edge, kept apart from both routine and defrost sets.
+	must0(st.AddCoreMeasurement(ctx, domain.CoreMeasurement{
+		ID: "CM-5", BatchID: "LOT-5", CellCode: "A-03-03", At: now.Add(-83 * time.Minute), C: 2.6,
+		ProbeDepthMM: 120, RequiredDepthMM: 120, ReachedCenter: true, Operator: "qa-li"}))
 
 	snap, _ = st.Load(tctx{}, now, win)
 	return &Scenario{Now: now, Snapshot: snap, Memory: timedStore{Store: st, now: now}, PlanID: "FZ-1"}

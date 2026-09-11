@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"coldcheck/domain"
@@ -18,6 +19,9 @@ type LocalDeviation struct {
 	DeltaC   float64
 	NearDoor bool
 	NearEvap bool
+	// DefrostEvap non-empty means the deviation bucket overlaps a defrost
+	// rise window: the local mean must not be quoted as routine.
+	DefrostEvap []string
 }
 
 type Obstruction struct {
@@ -98,11 +102,17 @@ func SpatialGaps(snap *domain.Snapshot, p Params) []string {
 	return gaps
 }
 
-// OfflineNodes returns active nodes whose most recent uplink is older than
-// their configured deadline (or the default offline window).
+// OfflineNodes returns active nodes whose most recent valid uplink is older
+// than their configured deadline (or the default offline window). Uplinks
+// inside a maintenance interval do not count, and a node currently under an
+// open maintenance interval is expected to be silent (calibration/swap), so
+// it is neither offline nor an evidence gap.
 func OfflineNodes(snap *domain.Snapshot, p Params) []string {
 	last := map[string]time.Time{}
 	for _, r := range snap.Air {
+		if snap.InMaintenance(r.NodeID, r.At) {
+			continue // readings while in maintenance do not count
+		}
 		if r.At.After(last[r.NodeID]) {
 			last[r.NodeID] = r.At
 		}
@@ -117,6 +127,9 @@ func OfflineNodes(snap *domain.Snapshot, p Params) []string {
 		n := snap.Nodes[id]
 		if !n.Active {
 			continue
+		}
+		if snap.NodeUnderMaintenance(id) {
+			continue // operator-acknowledged silence, not a node fault
 		}
 		win := n.Deadline
 		if win == 0 {
@@ -133,6 +146,8 @@ func OfflineNodes(snap *domain.Snapshot, p Params) []string {
 // gateway RSSI collapses relative to its free-air baseline while its
 // temperature series goes suspiciously flat. Either signal alone is weak
 // (a node can be cold-stable), both together justify a physical check.
+// Maintenance intervals are excluded: a node on the bench must not look
+// occluded, and the check is skipped while maintenance is still open.
 func OccludedNodes(snap *domain.Snapshot, p Params) []Obstruction {
 	start := snap.At.Add(-p.StagnationWindow)
 	type st struct {
@@ -144,6 +159,9 @@ func OccludedNodes(snap *domain.Snapshot, p Params) []Obstruction {
 	m := map[string]*st{}
 	for _, r := range snap.Air {
 		if r.At.Before(start) || r.At.After(snap.At) {
+			continue
+		}
+		if snap.InMaintenance(r.NodeID, r.At) {
 			continue
 		}
 		s := m[r.NodeID]
@@ -170,6 +188,9 @@ func OccludedNodes(snap *domain.Snapshot, p Params) []Obstruction {
 	for _, id := range ids {
 		n, ok := snap.Nodes[id]
 		if !ok || !n.Active || n.BaselineRSSI == 0 {
+			continue
+		}
+		if snap.NodeUnderMaintenance(id) {
 			continue
 		}
 		s := m[id]
@@ -225,6 +246,7 @@ func LocalDeviations(series map[string]*AirSeries, p Params) []LocalDeviation {
 					CellCode: c, ZoneCode: s.ZoneCode, At: pt.At,
 					LocalC: pt.C, MeanC: mean, DeltaC: d,
 					NearDoor: pt.NearDoor, NearEvap: pt.NearEvap,
+					DefrostEvap: append([]string(nil), pt.DefrostEvap...),
 				}
 				if worst == nil || math.Abs(ld.DeltaC) > math.Abs(worst.DeltaC) {
 					w := ld
@@ -253,6 +275,10 @@ func (l LocalDeviation) String() string {
 	if l.DeltaC < 0 {
 		sign = "偏冷"
 	}
-	return fmt.Sprintf("格位 %s%s 空气 %.2f°C，%s于温区均值 %.2f°C（Δ%+.2f°C）",
+	msg := fmt.Sprintf("格位 %s%s 空气 %.2f°C，%s于温区均值 %.2f°C（Δ%+.2f°C）",
 		l.CellCode, where, l.LocalC, sign, l.MeanC, l.DeltaC)
+	if len(l.DefrostEvap) > 0 {
+		msg += fmt.Sprintf("；该时刻处于蒸发器 %s 除霜温升窗口，不得与常规时段均值混读", strings.Join(l.DefrostEvap, "、"))
+	}
+	return msg
 }

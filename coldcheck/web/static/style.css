@@ -34,3 +34,6 @@ th,td{border-bottom:1px solid var(--line);padding:.35rem;text-align:left}
 .legend{font-size:.82rem;color:#50606e}.sw{display:inline-block;width:12px;height:12px;border-radius:3px;margin:0 3px 0 10px;vertical-align:middle}
 .sw.ok{background:#9fc88d}.sw.warn{background:#ef8a00}.sw.fail{background:#c62828}.sw.offline{background:#111}
 @media(max-width:600px){main{padding:0 .5rem}.alert em{margin-left:0;width:100%}}
+
+/* Defrost annotation tags: read-only evidence separation. */
+.tag{display:inline-block;padding:0 .45em;border-radius:9px;background:#eef3ff;color:#2a4d8f;font-size:.85em;border:1px solid #c7d6f5}

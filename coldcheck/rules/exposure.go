@@ -17,6 +17,12 @@ type CellPoint struct {
 	C        float64
 	NearDoor bool
 	NearEvap bool
+	// DefrostEvap lists evaporators whose rise windows overlap this bucket;
+	// empty means a routine (non-defrost-affected) bucket.
+	DefrostEvap []string
+	// DefrostCross marks a bucket that straddles a rise-window edge, so its
+	// air value is partly routine and partly defrost-affected.
+	DefrostCross bool
 }
 
 type AirSeries struct {
@@ -37,6 +43,10 @@ type ExposureInterval struct {
 	MinC     float64
 	MaxC     float64
 	AirC     float64 // representative air temperature, zero when unavailable
+	// DefrostEvap annotates evidence that overlaps a defrost rise window;
+	// the interval is still counted, but the UI keeps it apart from routine
+	// exposure. It never changes a quality verdict.
+	DefrostEvap []string
 }
 
 func dur(a, b time.Time) time.Duration { return b.Sub(a) }
@@ -63,8 +73,11 @@ func zoneAt(snap *domain.Snapshot, cellCode string) *domain.Zone {
 
 // BuildAirSeries groups node readings by mounted cell, resampled onto fixed
 // buckets so nodes on different uplink periods can be compared and a local
-// mean computed instead of relying on a warehouse-wide average.
-func BuildAirSeries(snap *domain.Snapshot, p Params) map[string]*AirSeries {
+// mean computed instead of relying on a warehouse-wide average. Readings
+// whose node is under maintenance in the bucket interval are dropped, and
+// each produced bucket is annotated with the defrost rise windows covering
+// it so routine and defrost-affected air stay separated downstream.
+func BuildAirSeries(snap *domain.Snapshot, p Params, ws []DefrostWindow) map[string]*AirSeries {
 	type agg struct {
 		sum float64
 		n   int
@@ -72,6 +85,9 @@ func BuildAirSeries(snap *domain.Snapshot, p Params) map[string]*AirSeries {
 	buckets := map[string]map[time.Time]*agg{}
 	meta := map[string]*AirSeries{}
 	for _, r := range snap.Air {
+		if snap.InMaintenance(r.NodeID, r.At) {
+			continue // calibration/swap window: reading is untrustworthy
+		}
 		n, ok := snap.Nodes[r.NodeID]
 		if !ok || !n.Active {
 			continue
@@ -106,12 +122,27 @@ func BuildAirSeries(snap *domain.Snapshot, p Params) map[string]*AirSeries {
 		}
 		sort.Slice(ts, func(i, j int) bool { return ts[i].Before(ts[j]) })
 		c := snap.Cells[cell]
+		cellWindows := WindowsForCell(snap, ws, cell)
 		for _, t := range ts {
 			a := bs[t]
-			meta[cell].Points = append(meta[cell].Points, CellPoint{
+			pt := CellPoint{
 				CellCode: cell, At: t.Add(p.Bucket / 2), C: a.sum / float64(a.n),
 				NearDoor: c.NearDoor, NearEvap: c.NearEvap,
-			})
+			}
+			biv := Interval{t, t.Add(p.Bucket)}
+			for _, w := range cellWindows {
+				if _, _, ok := overlap(biv, w.RiseInterval()); ok {
+					pt.DefrostEvap = append(pt.DefrostEvap, w.EvapID)
+				}
+				// A bucket that also contains active-heating time straddles
+				// the defrost start/end edge (recovery-only buckets don't).
+				if ai := w.ActiveInterval(); ai.To.After(ai.From) {
+					if _, _, ok := overlap(biv, ai); ok {
+						pt.DefrostCross = true
+					}
+				}
+			}
+			meta[cell].Points = append(meta[cell].Points, pt)
 		}
 	}
 	return meta
@@ -122,16 +153,39 @@ func inBand(c, min, max float64) bool { return c >= min && c <= max }
 // BatchExposure reconstructs, for each batch occupancy, every interval in
 // which the local air node is outside the zone band, the cell door is open,
 // the product was moved, or the batch sat in a zone that does not allow its
-// product segment. Adjacent same-reason intervals are merged.
-func BatchExposure(snap *domain.Snapshot, series map[string]*AirSeries, doors []domain.DoorEvent, p Params) []ExposureInterval {
+// product segment. Adjacent same-reason intervals are merged. Intervals
+// intersecting a defrost rise window keep their reason and duration but are
+// annotated with the evaporator id so evidence stays separable; defrost is a
+// known warming cause, never a verdict on product quality.
+func BatchExposure(snap *domain.Snapshot, series map[string]*AirSeries, doors []domain.DoorEvent, ws []DefrostWindow, p Params) []ExposureInterval {
 	var ex []ExposureInterval
 	prevCell := map[string]string{}
+	defrostTags := func(cell string, from, to time.Time) []string {
+		var tags []string
+		for _, w := range WindowsForCell(snap, ws, cell) {
+			if s, e, ok := overlap(Interval{from, to}, w.RiseInterval()); ok && e.After(s) {
+				tags = append(tags, w.EvapID)
+			}
+		}
+		return tags
+	}
 	appendRun := func(run []ExposureInterval, e ExposureInterval) []ExposureInterval {
 		if len(run) > 0 {
 			last := &run[len(run)-1]
 			if e.BatchID == last.BatchID && e.CellCode == last.CellCode && e.Reason == last.Reason && !e.From.After(last.To.Add(time.Second)) {
 				if e.To.After(last.To) {
 					last.To = e.To
+				}
+				for _, t := range e.DefrostEvap {
+					found := false
+					for _, ex2 := range last.DefrostEvap {
+						if ex2 == t {
+							found = true
+						}
+					}
+					if !found {
+						last.DefrostEvap = append(last.DefrostEvap, t)
+					}
 				}
 				return run
 			}
@@ -189,6 +243,7 @@ func BatchExposure(snap *domain.Snapshot, series map[string]*AirSeries, doors []
 				ex = appendRun(ex, ExposureInterval{
 					BatchID: b.ID, CellCode: occ.CellCode, ZoneCode: z.Code,
 					From: s, To: e, Reason: "door-open",
+					DefrostEvap: defrostTags(occ.CellCode, s, e),
 				})
 			}
 		}
@@ -203,6 +258,7 @@ func BatchExposure(snap *domain.Snapshot, series map[string]*AirSeries, doors []
 							BatchID: b.ID, CellCode: occ.CellCode, ZoneCode: z.Code,
 							From: s2, To: e2, Reason: "air-out-of-band",
 							MinC: z.MinC, MaxC: z.MaxC, AirC: pt.C,
+							DefrostEvap: append([]string(nil), pt.DefrostEvap...),
 						})
 					}
 				}
