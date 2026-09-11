@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS zones (
     target_c    numeric(5,2) NOT NULL,
     dairy_segs  text[] NOT NULL DEFAULT '{}',
     polygon     jsonb NOT NULL DEFAULT '[]',
+    -- Binds this zone geometry to a frozen layout version. NULL is allowed
+    -- only for legacy rows; new upserts resolve the active layout version.
     layout_id   text REFERENCES layout_versions(id)
 );
 
@@ -31,8 +33,12 @@ CREATE TABLE IF NOT EXISTS cells (
     near_evap   boolean NOT NULL DEFAULT false,
     near_door   boolean NOT NULL DEFAULT false,
     active      boolean NOT NULL DEFAULT true,
+    -- Binds this cell geometry to a frozen layout version (see zones.layout_id).
     layout_id   text REFERENCES layout_versions(id)
 );
+
+CREATE INDEX IF NOT EXISTS zones_layout_idx ON zones (layout_id);
+CREATE INDEX IF NOT EXISTS cells_layout_idx ON cells (layout_id);
 
 CREATE TABLE IF NOT EXISTS doors (
     id        text PRIMARY KEY,

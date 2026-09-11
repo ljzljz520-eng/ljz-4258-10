@@ -28,6 +28,7 @@ func main() {
 	flag.Parse()
 
 	var st store.Store
+	var clock func() time.Time
 	if *dsn != "" {
 		pg, err := store.NewPostgres(*dsn)
 		if err != nil {
@@ -39,6 +40,11 @@ func main() {
 		if *demo {
 			sc := seed.Build(time.Now())
 			st = sc.Memory
+			// Share the seed's fixed clock with HTTP handlers so handheld
+			// entries (scans/doors/core/loRa uplinks) land inside the same
+			// evaluation window the map renders.
+			t0 := sc.Now
+			clock = func() time.Time { return t0 }
 			log.Printf("demo seeded: %d air readings, %d raw door events, freeze plan %s",
 				len(sc.Snapshot.Air), len(sc.Snapshot.RawDoorEvents), sc.PlanID)
 		} else {
@@ -50,6 +56,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	app.WithClock(clock)
 	srv := &http.Server{
 		Addr:              *addr,
 		Handler:           withLog(app.Routes()),

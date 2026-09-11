@@ -10,6 +10,7 @@ import (
 	"html/template"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"coldcheck/domain"
@@ -23,6 +24,24 @@ type App struct {
 	Params rules.Params
 	Window time.Duration
 	tmpl   *template.Template
+	now    func() time.Time
+}
+
+// WithClock overrides the evaluation/recording clock. Demo mode fixes the
+// clock at the seed scenario time so that records entered on the handheld
+// page share the same "now" as the snapshot that renders the map.
+func (a *App) WithClock(now func() time.Time) *App {
+	if now != nil {
+		a.now = now
+	}
+	return a
+}
+
+func (a *App) nowTime() time.Time {
+	if a.now != nil {
+		return a.now()
+	}
+	return time.Now()
 }
 
 func NewApp(st store.Store, p rules.Params, window time.Duration) (*App, error) {
@@ -51,7 +70,7 @@ type evalBundle struct {
 }
 
 func (a *App) evaluate(ctx context.Context) (*evalBundle, error) {
-	snap, err := a.Store.Load(ctx, time.Now(), a.Window)
+	snap, err := a.Store.Load(ctx, a.nowTime(), a.Window)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +109,7 @@ func (a *App) dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.render(w, "dashboard.html", 200, map[string]any{
-		"Bundle": b, "Now": time.Now(), "Window": a.Window,
+		"Bundle": b, "Now": a.nowTime(), "Window": a.Window,
 	})
 }
 
@@ -142,7 +161,7 @@ func (a *App) apiAlerts(w http.ResponseWriter, r *http.Request) {
 
 // loraUplink accepts a Network Server webhook and stores the air reading.
 func (a *App) loraUplink(w http.ResponseWriter, r *http.Request) {
-	reading, err := lora.Parse(readBody(r))
+	reading, err := lora.ParseAt(readBody(r), a.nowTime())
 	if err != nil {
 		http.Error(w, "bad uplink: "+err.Error(), http.StatusBadRequest)
 		return
@@ -163,7 +182,7 @@ func (a *App) postScan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	now := time.Now()
+	now := a.nowTime()
 	m := domain.MoveScan{
 		ScanID:   defaultID(r, "scan_id", "S"),
 		BatchID:  r.FormValue("batch_id"),
@@ -200,7 +219,7 @@ func (a *App) postDoor(w http.ResponseWriter, r *http.Request) {
 	}
 	e := domain.RawDoorEvent{
 		DoorID: r.FormValue("door_id"),
-		At:     parseTime(r.FormValue("at"), time.Now()),
+		At:     parseTime(r.FormValue("at"), a.nowTime()),
 		IsOpen: r.FormValue("state") == "open",
 		RSSI:   atoiOr(r.FormValue("rssi"), -60),
 	}
@@ -224,20 +243,40 @@ func (a *App) postCore(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	now := time.Now()
-	depth, _ := strconv.ParseFloat(r.FormValue("probe_depth_mm"), 64)
-	required, _ := strconv.ParseFloat(r.FormValue("required_depth_mm"), 64)
-	c, err1 := strconv.ParseFloat(r.FormValue("c"), 64)
-	if err1 != nil {
-		http.Error(w, "c must be a number", 400)
+	now := a.nowTime()
+	c, err := strconv.ParseFloat(strings.TrimSpace(r.FormValue("c")), 64)
+	if err != nil {
+		http.Error(w, "芯温必须是数字", 400)
 		return
 	}
+	depth, err := strconv.ParseFloat(strings.TrimSpace(r.FormValue("probe_depth_mm")), 64)
+	if err != nil {
+		http.Error(w, "实际插入深度必须是数字", 400)
+		return
+	}
+	if depth < 0 {
+		http.Error(w, "实际插入深度不能为负数", 400)
+		return
+	}
+	required, err := strconv.ParseFloat(strings.TrimSpace(r.FormValue("required_depth_mm")), 64)
+	if err != nil {
+		http.Error(w, "到中心所需深度必须是数字", 400)
+		return
+	}
+	if required < 0 {
+		http.Error(w, "到中心所需深度不能为负数", 400)
+		return
+	}
+	checked := r.FormValue("reached_center") == "on"
+	// An un-ticked checkbox may still be upgraded when the achieved depth is
+	// within tolerance of the required centre depth.
+	reached := checked || (required > 0 && depth+a.Params.ProbeToleranceMM >= required)
 	m := domain.CoreMeasurement{
 		ID: defaultID(r, "measurement_id", "CM"), BatchID: r.FormValue("batch_id"),
 		CellCode: r.FormValue("cell_code"), PlanID: r.FormValue("plan_id"),
 		At: parseTime(r.FormValue("at"), now), C: c,
 		ProbeDepthMM: depth, RequiredDepthMM: required,
-		ReachedCenter: r.FormValue("reached_center") == "on" || depth+a.Params.ProbeToleranceMM >= required && required > 0,
+		ReachedCenter: reached,
 		Operator:      r.FormValue("operator"),
 	}
 	if m.BatchID == "" || m.CellCode == "" {
@@ -272,13 +311,13 @@ func (a *App) postFreeze(w http.ResponseWriter, r *http.Request) {
 	if hours <= 0 {
 		hours = 4
 	}
-	snap, err := a.Store.Load(r.Context(), time.Now(), a.Window)
+	snap, err := a.Store.Load(r.Context(), a.nowTime(), a.Window)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
 	plan := rules.RandomFreeze(snap, defaultID(r, "plan_id", "FZ"),
-		time.Now(), time.Now().Add(time.Duration(hours)*time.Hour),
+		a.nowTime(), a.nowTime().Add(time.Duration(hours)*time.Hour),
 		cellsN, pointsN, newLockedRNG())
 	if err := a.Store.SaveFreezePlan(r.Context(), plan); err != nil {
 		http.Error(w, err.Error(), 500)

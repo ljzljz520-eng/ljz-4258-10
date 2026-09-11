@@ -86,11 +86,13 @@ function init(data) {
         html += `<br>温区 ${p.zone}` +
           (p.nearDoor ? " · 近门口" : "") + (p.nearEvap ? " · 近蒸发器" : "") +
           (p.batches && p.batches.length ? `<br>在库批：${p.batches.join(", ")}` : "") +
+          (p.layout ? `<br>库位版本：${p.layout}` : "") +
           `<br>状态：${p.status || "ok"}`;
       } else if (p.kind === "node") {
         html += `<br>空气节点 · ${p.cell} · ${p.status || "ok"}`;
       } else if (p.kind === "zone") {
-        html += `<br>${p.name} 限值 [${p.min}, ${p.max}]°C`;
+        html += `<br>${p.name} 限值 [${p.min}, ${p.max}]°C` +
+          (p.layout ? `<br>库位版本：${p.layout}` : "");
       }
       return html;
     }

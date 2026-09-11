@@ -51,9 +51,15 @@ func (m *Memory) Load(_ context.Context, now time.Time, window time.Duration) (*
 		Batches: map[string]*domain.Batch{},
 	}
 	for k, v := range m.zones {
+		if v.LayoutID != "" && m.layout != nil && v.LayoutID != m.layout.ID {
+			continue // geometry belongs to a different layout version
+		}
 		snap.Zones[k] = clonePtr(v)
 	}
 	for k, v := range m.cells {
+		if v.LayoutID != "" && m.layout != nil && v.LayoutID != m.layout.ID {
+			continue
+		}
 		snap.Cells[k] = clonePtr(v)
 	}
 	for k, v := range m.doors {
@@ -118,6 +124,9 @@ func (m *Memory) SaveLayoutVersion(_ context.Context, v domain.LayoutVersion) er
 func (m *Memory) UpsertZone(_ context.Context, z domain.Zone) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if z.LayoutID == "" && m.layout != nil {
+		z.LayoutID = m.layout.ID
+	}
 	cp := z
 	cp.DairySegs = append([]string(nil), z.DairySegs...)
 	cp.Polygon = append([][2]float64(nil), z.Polygon...)
@@ -127,6 +136,9 @@ func (m *Memory) UpsertZone(_ context.Context, z domain.Zone) error {
 func (m *Memory) UpsertCell(_ context.Context, c domain.Cell) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if c.LayoutID == "" && m.layout != nil {
+		c.LayoutID = m.layout.ID
+	}
 	cp := c
 	cp.Neighbours = append([]string(nil), c.Neighbours...)
 	m.cells[c.Code] = &cp

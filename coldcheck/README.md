@@ -10,6 +10,8 @@
 |---|---|
 | 格位/门磁/暴露区间规则 | Go（`rules/`，纯函数、可单测） |
 | 库位版本、产品段、人工测量 | PostgreSQL（`sql/schema.sql` + `store/postgres.go`） |
+
+温区与格位记录均带 `layout_id` 绑定到库位版本：Upsert 时未指定则绑定当前活动版本；`Load` 只返回活动版本（及历史遗留的未绑定行）的几何，切换版本后旧格位/温区不会混入当前平面。
 | 空气节点广播 | LoRaWAN 网关 webhook → `POST /lorawan/uplink`（`lora/`） |
 | 库内分层平面 | MapLibre GL JS（`/map`，GeoJSON `/api/geojson`，按层切换） |
 | 手持浏览器录入 | HTMX（`/entry`，表单提交返回 HTML 片段） |
@@ -72,7 +74,7 @@ byte 1-2  int16 BE，温度 × 0.01°C
 byte 3-4  uint16 电池 mV（可选）
 ```
 
-也接受 decoder 预解析的 `object.temperature|tempC|temp_c|c`。平台只收上行，不发下行、不控制设备。
+也接受 decoder 预解析的 `object.temperature|tempC|temp_c|c`。二进制与 decoder 两条路径都做同一物理合理性校验（-60~80°C，拒绝 NaN/Inf）；decoder 回传的异常值（如错误寄存器、0x7FFF 哨兵值）不会被当成正常上行入库。平台只收上行，不发下行、不控制设备。
 
 ### HTMX 录入
 

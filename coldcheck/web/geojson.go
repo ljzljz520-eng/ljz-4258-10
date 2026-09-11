@@ -21,6 +21,10 @@ func (a *App) apiGeoJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snap := b.Snap
+	layoutID := ""
+	if snap.Layout != nil {
+		layoutID = snap.Layout.ID
+	}
 	cellAlert := map[string]string{}
 	for _, al := range b.Res.Alerts {
 		if al.CellCode == "" {
@@ -52,7 +56,7 @@ func (a *App) apiGeoJSON(w http.ResponseWriter, r *http.Request) {
 			"geometry": map[string]any{"type": "Polygon", "coordinates": [][][2]float64{ring}},
 			"properties": map[string]any{
 				"kind": "zone", "code": z.Code, "name": z.Name, "layer": z.Layer,
-				"min": z.MinC, "max": z.MaxC,
+				"min": z.MinC, "max": z.MaxC, "layout": orLayout(z.LayoutID, layoutID),
 			},
 		})
 	}
@@ -74,6 +78,7 @@ func (a *App) apiGeoJSON(w http.ResponseWriter, r *http.Request) {
 				"kind": "cell", "code": code, "zone": c.ZoneCode, "zoneName": zoneName,
 				"layer": c.Layer, "nearEvap": c.NearEvap, "nearDoor": c.NearDoor,
 				"status": cellAlert[code], "batches": occupants[code],
+				"layout": orLayout(c.LayoutID, layoutID),
 			},
 		})
 	}
@@ -101,7 +106,20 @@ func (a *App) apiGeoJSON(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	w.Header().Set("Content-Type", "application/geo+json")
+	// Bind the feature collection itself to the evaluated layout version.
+	if layoutID != "" {
+		w.Header().Set("X-Layout-Version", layoutID)
+	}
 	json.NewEncoder(w).Encode(fc)
+}
+
+// orLayout reports the layout a geometry belongs to, defaulting to the
+// snapshot's active layout for legacy (unbound) rows.
+func orLayout(bound, active string) string {
+	if bound != "" {
+		return bound
+	}
+	return active
 }
 
 func cellSquare(x, y, size float64) [][2]float64 {

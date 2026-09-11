@@ -57,3 +57,34 @@ func TestParseObjectUplinkAndRejectBad(t *testing.T) {
 		t.Fatal("90C must be rejected as implausible")
 	}
 }
+
+func TestParseObjectRejectsImplausibleTemperature(t *testing.T) {
+	// A decoder object must not bypass the physical plausibility envelope:
+	// error sentinels / out-of-range values come back as numbers too.
+	for _, bad := range []float64{-999, 90.01, 125, -60.01} {
+		body, _ := json.Marshal(map[string]any{"devEUI": "z", "object": map[string]any{"tempC": bad}})
+		if _, err := lora.Parse(body); err == nil {
+			t.Fatalf("decoder temp %.2f must be rejected", bad)
+		}
+	}
+	// Boundary values are accepted.
+	for _, ok := range []float64{-60, -18.4, 0, 2.35, 80} {
+		body, _ := json.Marshal(map[string]any{"devEUI": "z", "object": map[string]any{"temp_c": ok}})
+		r, err := lora.Parse(body)
+		if err != nil || r.C != ok {
+			t.Fatalf("decoder temp %.2f must be accepted: r=%+v err=%v", ok, r, err)
+		}
+	}
+}
+
+func TestParseAtUsesInjectedClock(t *testing.T) {
+	fixed := time.Date(2026, 9, 11, 8, 0, 0, 0, time.UTC)
+	body, _ := json.Marshal(map[string]any{"devEUI": "x", "object": map[string]any{"temperature": 2.0}})
+	r, err := lora.ParseAt(body, fixed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.At.Equal(fixed) {
+		t.Fatalf("at = %v, want injected %v", r.At, fixed)
+	}
+}

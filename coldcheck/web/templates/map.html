@@ -6,6 +6,7 @@
     <button class="btn secondary" onclick="setLayer(0)">冷藏/冷冻层 L0</button>
     <button class="btn secondary" onclick="setLayer(1)">门口缓冲层 L1</button>
     <span class="legend"><i class="sw ok"></i>正常 <i class="sw warn"></i>提示 <i class="sw fail"></i>不合格 <i class="sw offline"></i>离线</span>
+    {{with .Bundle.Snap.Layout}}<span class="legend">库位版本：<b>{{.ID}}</b>{{if not .Active}}（非活动）{{end}}</span>{{end}}
   </div>
   <div id="map"></div>
 </section>

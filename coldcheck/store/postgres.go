@@ -54,7 +54,9 @@ func (pg *Postgres) Load(ctx context.Context, now time.Time, window time.Duratio
 		return nil, err
 	}
 
-	zrows, err := pg.DB.QueryContext(ctx, `SELECT code,name,layer,min_c,max_c,target_c,dairy_segs,polygon FROM zones`)
+	zrows, err := pg.DB.QueryContext(ctx,
+		`SELECT code,name,layer,min_c,max_c,target_c,dairy_segs,polygon,COALESCE(layout_id,'') FROM zones
+		 WHERE layout_id IS NULL OR layout_id = $1`, lid)
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +64,7 @@ func (pg *Postgres) Load(ctx context.Context, now time.Time, window time.Duratio
 		var z domain.Zone
 		var segs pq.StringArray
 		var poly []byte
-		if err := zrows.Scan(&z.Code, &z.Name, &z.Layer, &z.MinC, &z.MaxC, &z.TargetC, &segs, &poly); err != nil {
+		if err := zrows.Scan(&z.Code, &z.Name, &z.Layer, &z.MinC, &z.MaxC, &z.TargetC, &segs, &poly, &z.LayoutID); err != nil {
 			zrows.Close()
 			return nil, err
 		}
@@ -75,14 +77,15 @@ func (pg *Postgres) Load(ctx context.Context, now time.Time, window time.Duratio
 	zrows.Close()
 
 	crows, err := pg.DB.QueryContext(ctx,
-		`SELECT code,zone_code,layer,x,y,neighbours,near_evap,near_door,active FROM cells WHERE active = true`)
+		`SELECT code,zone_code,layer,x,y,neighbours,near_evap,near_door,active,COALESCE(layout_id,'') FROM cells
+		 WHERE active = true AND (layout_id IS NULL OR layout_id = $1)`, lid)
 	if err != nil {
 		return nil, err
 	}
 	for crows.Next() {
 		var c domain.Cell
 		var nb pq.StringArray
-		if err := crows.Scan(&c.Code, &c.ZoneCode, &c.Layer, &c.X, &c.Y, &nb, &c.NearEvap, &c.NearDoor, &c.Active); err != nil {
+		if err := crows.Scan(&c.Code, &c.ZoneCode, &c.Layer, &c.X, &c.Y, &nb, &c.NearEvap, &c.NearDoor, &c.Active, &c.LayoutID); err != nil {
 			crows.Close()
 			return nil, err
 		}
@@ -288,25 +291,58 @@ func (pg *Postgres) SaveLayoutVersion(ctx context.Context, v domain.LayoutVersio
 
 func (pg *Postgres) UpsertZone(ctx context.Context, z domain.Zone) error {
 	poly, _ := json.Marshal(z.Polygon)
-	_, err := pg.DB.ExecContext(ctx, `
-		INSERT INTO zones(code,name,layer,min_c,max_c,target_c,dairy_segs,polygon)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+	layoutID, err := pg.resolveLayout(ctx, z.LayoutID)
+	if err != nil {
+		return err
+	}
+	var lid any
+	if layoutID != "" {
+		lid = layoutID
+	}
+	_, err = pg.DB.ExecContext(ctx, `
+		INSERT INTO zones(code,name,layer,min_c,max_c,target_c,dairy_segs,polygon,layout_id)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name,layer=EXCLUDED.layer,
 		  min_c=EXCLUDED.min_c,max_c=EXCLUDED.max_c,target_c=EXCLUDED.target_c,
-		  dairy_segs=EXCLUDED.dairy_segs,polygon=EXCLUDED.polygon`,
-		z.Code, z.Name, z.Layer, z.MinC, z.MaxC, z.TargetC, pq.Array(z.DairySegs), poly)
+		  dairy_segs=EXCLUDED.dairy_segs,polygon=EXCLUDED.polygon,layout_id=EXCLUDED.layout_id`,
+		z.Code, z.Name, z.Layer, z.MinC, z.MaxC, z.TargetC, pq.Array(z.DairySegs), poly, lid)
 	return err
 }
 
 func (pg *Postgres) UpsertCell(ctx context.Context, c domain.Cell) error {
-	_, err := pg.DB.ExecContext(ctx, `
-		INSERT INTO cells(code,zone_code,layer,x,y,neighbours,near_evap,near_door,active)
-		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+	layoutID, err := pg.resolveLayout(ctx, c.LayoutID)
+	if err != nil {
+		return err
+	}
+	var lid any
+	if layoutID != "" {
+		lid = layoutID
+	}
+	_, err = pg.DB.ExecContext(ctx, `
+		INSERT INTO cells(code,zone_code,layer,x,y,neighbours,near_evap,near_door,active,layout_id)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		ON CONFLICT (code) DO UPDATE SET zone_code=EXCLUDED.zone_code,layer=EXCLUDED.layer,
 		  x=EXCLUDED.x,y=EXCLUDED.y,neighbours=EXCLUDED.neighbours,
-		  near_evap=EXCLUDED.near_evap,near_door=EXCLUDED.near_door,active=EXCLUDED.active`,
-		c.Code, c.ZoneCode, c.Layer, c.X, c.Y, pq.Array(c.Neighbours), c.NearEvap, c.NearDoor, c.Active)
+		  near_evap=EXCLUDED.near_evap,near_door=EXCLUDED.near_door,active=EXCLUDED.active,
+		  layout_id=EXCLUDED.layout_id`,
+		c.Code, c.ZoneCode, c.Layer, c.X, c.Y, pq.Array(c.Neighbours), c.NearEvap, c.NearDoor, c.Active, lid)
 	return err
+}
+
+// resolveLayout returns the layout id a geometry row must bind to. An
+// explicit id wins; otherwise the currently active layout version is used;
+// with no layout versions at all the geometry stays unbound (NULL).
+func (pg *Postgres) resolveLayout(ctx context.Context, explicit string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	var id string
+	err := pg.DB.QueryRowContext(ctx,
+		`SELECT id FROM layout_versions WHERE active = true ORDER BY created_at DESC LIMIT 1`).Scan(&id)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return id, err
 }
 
 func (pg *Postgres) UpsertDoor(ctx context.Context, d domain.Door) error {

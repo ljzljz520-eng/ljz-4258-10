@@ -19,6 +19,9 @@ type Zone struct {
 	TargetC   float64
 	DairySegs []string     // product segment codes allowed here
 	Polygon   [][2]float64 // x/y metres in the local store coordinate system
+	// LayoutID binds the geometry to a frozen layout version; empty means
+	// the zone belongs to the currently active layout.
+	LayoutID string
 }
 
 type Cell struct {
@@ -31,6 +34,9 @@ type Cell struct {
 	NearEvap   bool // close to an evaporator
 	NearDoor   bool // close to a loading door
 	Active     bool
+	// LayoutID binds the cell geometry to a frozen layout version; empty
+	// means the cell belongs to the currently active layout.
+	LayoutID string
 }
 
 type Door struct {
