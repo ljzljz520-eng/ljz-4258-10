@@ -1,0 +1,61 @@
+{{template "layout_start" .}}
+<section class="card handheld">
+  <h2>手持浏览器录入</h2>
+  <p class="hint">仓管扫描产品并记录开门、移位与芯温；质量冻结随机格位和时点。提交后规则立即重新核查。</p>
+
+  <details open>
+    <summary>① 产品移位扫描</summary>
+    <form hx-post="/scan" hx-target="#result" hx-swap="innerHTML">
+      <label>批号 <input name="batch_id" required placeholder="LOT-1" inputmode="text"></label>
+      <label>源格位 <input name="from_cell" placeholder="A-01-03"></label>
+      <label>目的格位 <input name="to_cell" required placeholder="A-01-02"></label>
+      <label>时间（留空=现在） <input name="at" type="datetime-local"></label>
+      <button class="btn" type="submit">记录移位</button>
+    </form>
+  </details>
+
+  <details open>
+    <summary>② 门磁/开门事件（原始，参与去抖）</summary>
+    <form hx-post="/door" hx-target="#result" hx-swap="innerHTML">
+      <label>门编号
+        <select name="door_id">
+          <option>D1</option><option>D2</option>
+        </select>
+      </label>
+      <label>状态
+        <select name="state"><option value="open">开启</option><option value="closed">关闭</option></select>
+      </label>
+      <label>RSSI <input name="rssi" type="number" value="-60"></label>
+      <label>时间（留空=现在） <input name="at" type="datetime-local"></label>
+      <button class="btn" type="submit">记录门事件</button>
+    </form>
+  </details>
+
+  <details open>
+    <summary>③ 人工抽测芯温</summary>
+    <form hx-post="/core" hx-target="#result" hx-swap="innerHTML">
+      <label>批号 <input name="batch_id" required placeholder="LOT-1"></label>
+      <label>格位 <input name="cell_code" required placeholder="A-01-02"></label>
+      <label>芯温 °C <input name="c" required type="number" step="0.1" inputmode="decimal"></label>
+      <label>实际插入深度 mm <input name="probe_depth_mm" required type="number" step="0.1"></label>
+      <label>到中心所需深度 mm <input name="required_depth_mm" required type="number" step="0.1"></label>
+      <label class="check"><input type="checkbox" name="reached_center"> 已确认达到几何中心</label>
+      <label>关联冻结计划（可空） <input name="plan_id" placeholder="FZ-1"></label>
+      <label>操作员 <input name="operator" placeholder="工号/姓名"></label>
+      <button class="btn" type="submit">提交芯温</button>
+    </form>
+  </details>
+
+  <details>
+    <summary>④ 质量人员冻结随机抽测</summary>
+    <form hx-post="/freeze" hx-target="#result" hx-swap="innerHTML">
+      <label>随机格位数 <input name="cells" type="number" value="3" min="1"></label>
+      <label>随机测量时点 <input name="points" type="number" value="2" min="1"></label>
+      <label>覆盖未来小时 <input name="hours" type="number" value="4" min="1"></label>
+      <button class="btn danger" type="submit">冻结抽测</button>
+    </form>
+  </details>
+</section>
+
+<section id="result" class="card" aria-live="polite"></section>
+{{template "layout_end" .}}

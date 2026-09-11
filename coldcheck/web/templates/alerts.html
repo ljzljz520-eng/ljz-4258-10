@@ -1,0 +1,14 @@
+{{define "alerts_list"}}
+{{if not .}}<p class="ok">本窗口未发现异常。</p>{{end}}
+<ul class="alerts">
+{{range .}}
+  <li class="alert {{severityClass .Severity}}">
+    <span class="code">{{.Code}}</span>
+    <span>{{.Msg}}</span>
+    {{if .CellCode}}<em>{{.CellCode}}</em>{{end}}
+  </li>
+{{end}}
+</ul>
+{{end}}
+<h2>系统提示 <small>15 秒自动刷新（HTMX 轮询）</small></h2>
+{{template "alerts_list" .Alerts}}

@@ -1,0 +1,15 @@
+{{template "layout_start" .}}
+<section class="card">
+  <h2>库内分层平面（MapLibre）</h2>
+  <p class="hint">切换楼层；格位颜色表示该格位自身节点的核查状态，近门口/蒸发器格位带角标，不使用库房均值着色。</p>
+  <div class="maptoolbar">
+    <button class="btn secondary" onclick="setLayer(0)">冷藏/冷冻层 L0</button>
+    <button class="btn secondary" onclick="setLayer(1)">门口缓冲层 L1</button>
+    <span class="legend"><i class="sw ok"></i>正常 <i class="sw warn"></i>提示 <i class="sw fail"></i>不合格 <i class="sw offline"></i>离线</span>
+  </div>
+  <div id="map"></div>
+</section>
+<link href="https://unpkg.com/maplibre-gl@4.4.1/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@4.4.1/dist/maplibre-gl.js"></script>
+<script src="/static/map.js"></script>
+{{template "layout_end" .}}

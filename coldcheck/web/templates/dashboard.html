@@ -1,0 +1,37 @@
+{{template "layout_start" .}}
+<section class="grid">
+  <div class="card">
+    <h2>当前核查</h2>
+    <p>库位版本：{{with .Bundle.Snap.Layout}}{{.ID}}（{{.Note}}）{{end}}</p>
+    <p>评估时刻：{{fmtTime .Now}}，窗口 {{.Window.String}}</p>
+    <p>去抖开门事件：{{len .Bundle.Res.DoorEvents}} · 暴露区间：{{len .Bundle.Res.Exposure}} · 本地差异：{{len .Bundle.Res.Deviations}}</p>
+  </div>
+  <div class="card">
+    <h2>快捷操作（手持）</h2>
+    <p><a class="btn" href="/entry">扫描产品 / 记录开门 / 录入芯温</a></p>
+    <p><a class="btn" href="/map">查看库内分层平面</a></p>
+  </div>
+</section>
+
+<section class="card"
+  hx-get="/partials/alerts" hx-trigger="load, every 15s" hx-swap="innerHTML">
+  <h2>系统提示</h2>
+  {{template "alerts_list" .Bundle.Res.Alerts}}
+</section>
+
+<section class="card">
+  <h2>暴露区间（按批）</h2>
+  <table>
+    <thead><tr><th>批</th><th>格位/温区</th><th>原因</th><th>起</th><th>止</th><th>空气°C</th></tr></thead>
+    <tbody>
+    {{range .Bundle.Res.Exposure}}
+      <tr>
+        <td>{{.BatchID}}</td><td>{{.CellCode}} / {{.ZoneCode}}</td><td>{{.Reason}}</td>
+        <td>{{fmtTime .From}}</td><td>{{fmtTime .To}}</td>
+        <td>{{if .AirC}}{{printf "%.2f" .AirC}}{{else}}—{{end}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+</section>
+{{template "layout_end" .}}
